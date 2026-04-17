@@ -30,7 +30,6 @@ def validate_config():
     """Validate that required config fields are filled."""
     required_fields = [
         'URL',
-        'EMAIL_ADDRESS',
         'PREFERRED_CONTACT_NUMBER',
         'BUYER_TYPE',
         'FIRST_LOT_PREFERENCE'
@@ -129,23 +128,43 @@ def fill_form_field(driver, selector, value, field_name, is_select=False):
 
 
 def submit_form(driver):
-    """Submit the form by clicking submit button."""
+    """Submit the form by clicking checkbox and submit button."""
     try:
-        # Look for submit button - various selectors commonly used
+        logger.info("Preparing to submit form...")
+        
+        # First, check and click the Terms and Conditions checkbox
+        try:
+            checkbox = wait_for_element(driver, (By.CLASS_NAME, "inputfield-Terms_and_Conditions__c"), timeout=5)
+            if checkbox and not checkbox.is_selected():
+                checkbox.click()
+                logger.info("✓ Terms and Conditions checkbox clicked")
+            elif checkbox and checkbox.is_selected():
+                logger.info("✓ Terms and Conditions checkbox already selected")
+            else:
+                logger.warning("Could not find Terms and Conditions checkbox")
+        except Exception as e:
+            logger.error(f"Error handling Terms and Conditions checkbox: {e}")
+            return False
+        
+        # Wait a moment for the checkbox action to complete
+        time.sleep(1)
+        
+        # Look for submit button - try multiple selectors
         submit_selectors = [
-            (By.NAME, "submit"),
-            (By.ID, "submit"),
-            (By.XPATH, "//button[@type='submit']"),
+            (By.CLASS_NAME, "subbtn"),  # Primary submit button class
+            (By.XPATH, "//button[contains(text(), 'Submit') or contains(text(), 'submit')]"),
             (By.XPATH, "//input[@type='submit']"),
-            (By.CLASS_NAME, "submit-button"),
-            (By.CLASS_NAME, "btn-submit")
+            (By.XPATH, "//button[@type='submit']"),
+            (By.NAME, "submit"),
+            (By.ID, "submit")
         ]
         
         submit_button = None
         for selector in submit_selectors:
             try:
                 submit_button = driver.find_element(*selector)
-                if submit_button.is_displayed():
+                if submit_button.is_displayed() and submit_button.is_enabled():
+                    logger.info(f"Found submit button with selector: {selector}")
                     break
             except:
                 continue
@@ -158,20 +177,28 @@ def submit_form(driver):
         submit_button.click()
         
         # Wait for form to process
-        time.sleep(2)
+        time.sleep(7)
         
         # Check for success/confirmation message
         try:
-            WebDriverWait(driver, 10).until(
+            WebDriverWait(driver, 15).until(
                 lambda d: 'success' in d.page_source.lower() or 
                          'confirmation' in d.page_source.lower() or
-                         'thank you' in d.page_source.lower()
+                         'thank you' in d.page_source.lower() or
+                         'submitted successfully' in d.page_source.lower()
             )
             logger.info("✓ Form submission appears successful!")
             return True
         except:
-            logger.info("Form submitted, but confirmation message not detected")
-            return True
+            # Check if we're on a success page or redirected
+            current_url = driver.current_url
+            if 'success' in current_url.lower() or 'confirmation' in current_url.lower():
+                logger.info("✓ Form submission appears successful (redirected to success page)!")
+                return True
+            else:
+                logger.info("Form submitted, but confirmation message not detected")
+                logger.info(f"Current URL: {current_url}")
+                return True
             
     except Exception as e:
         logger.error(f"Error submitting form: {e}")
@@ -191,12 +218,6 @@ def fill_form(driver):
         # Note: First Name and Last Name are prefilled by the server (personalized link)
         # so we don't fill them here
         fields_to_fill = [
-            (
-                (By.CLASS_NAME, "inputfield-Email_Address__c"),
-                config.EMAIL_ADDRESS,
-                "Email",
-                False
-            ),
             (
                 (By.CLASS_NAME, "inputfield-Mobile_Phone__c"),
                 config.PREFERRED_CONTACT_NUMBER,
@@ -234,12 +255,13 @@ def fill_form(driver):
                 False
             ))
         
-        if config.REGISTRATION_QUESTION_1:
+        # Add contract condition if provided
+        if config.CONTRACT_CONDITION:
             fields_to_fill.append((
-                (By.CLASS_NAME, "inputfield-Registration_Question_1__c"),
-                config.REGISTRATION_QUESTION_1,
-                "Registration Question 1",
-                False
+                (By.CLASS_NAME, "inputfield-dc__Multi_Picklist__c"),
+                config.CONTRACT_CONDITION,
+                "Contract Condition",
+                True
             ))
         
         # Fill each field
@@ -278,7 +300,7 @@ def main(browser='firefox'):
         driver.get(config.URL)
         
         # Wait for page to load
-        time.sleep(3)
+        time.sleep(2)
         
         # Fill form
         if not fill_form(driver):
@@ -292,8 +314,8 @@ def main(browser='firefox'):
         logger.info("✓ Form submission completed!")
         
         # Keep browser open for verification (optional)
-        logger.info("Browser will stay open for 5 seconds for verification...")
-        time.sleep(5)
+        logger.info("Browser will stay open for 10 seconds for verification...")
+        time.sleep(10)
         
         return True
         
@@ -307,7 +329,6 @@ def main(browser='firefox'):
 
 if __name__ == "__main__":
     # Use 'chrome' or 'firefox'
-    browser_choice = 'chrome'
-    
+    browser_choice = 'firefox'
     success = main(browser_choice)
     sys.exit(0 if success else 1)

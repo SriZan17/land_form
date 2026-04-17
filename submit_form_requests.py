@@ -23,7 +23,6 @@ def validate_config():
     """Validate that required config fields are filled."""
     required_fields = [
         'URL',
-        'EMAIL_ADDRESS',
         'PREFERRED_CONTACT_NUMBER',
         'BUYER_TYPE',
         'FIRST_LOT_PREFERENCE'
@@ -69,10 +68,10 @@ def build_form_data():
         'j_id0:j_id377': 'j_id0:j_id377',  # Form ID (may vary)
         'dc__Registered_First_Name__c': '',  # Readonly - server fills from session
         'dc__Registered_Last_Name__c': '',   # Readonly - server fills from session
-        'Email_Address__c': config.EMAIL_ADDRESS,
         'Mobile_Phone__c': config.PREFERRED_CONTACT_NUMBER,
         'Buyer_Type__c': config.BUYER_TYPE,
         'X1st_Lot_Preference__c': config.FIRST_LOT_PREFERENCE,
+        'Terms_and_Conditions__c': '1',  # Checkbox - checked (required)
     }
     
     # Add optional fields if provided
@@ -82,11 +81,8 @@ def build_form_data():
     if config.THIRD_LOT_PREFERENCE:
         form_data['X3rd_Lot_Preference__c'] = config.THIRD_LOT_PREFERENCE
     
-    if config.REGISTRATION_QUESTION_1:
-        form_data['Registration_Question_1__c'] = config.REGISTRATION_QUESTION_1
-    
     if config.CONTRACT_CONDITION:
-        form_data['Contract_Condition__c'] = config.CONTRACT_CONDITION
+        form_data['dc__Multi_Picklist__c'] = config.CONTRACT_CONDITION
     
     return form_data
 
