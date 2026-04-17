@@ -278,57 +278,134 @@ def fill_form(driver):
         return False
 
 
-def main(browser='firefox'):
-    """Main execution function."""
+def check_form_availability(driver):
+    """Check if the form is currently available for submission."""
+    try:
+        # Wait for page to load
+        time.sleep(3)
+        
+        # Check for "Event Not Yet Accepting Registrations" message
+        try:
+            not_accepting = driver.find_elements(By.XPATH, "//h2[contains(text(), 'Event Not Yet Accepting Registrations')]")
+            if not_accepting:
+                logger.warning("❌ Form is not yet accepting registrations")
+                return False, "not_yet_open"
+        except:
+            pass
+        
+        # Check for "Registrations have now closed" message
+        try:
+            closed = driver.find_elements(By.XPATH, "//strong[contains(text(), 'Registrations have now closed')]")
+            if closed:
+                logger.warning("❌ Registrations have now closed")
+                return False, "closed"
+        except:
+            pass
+        
+        # Check if form elements are present
+        try:
+            form = driver.find_element(By.TAG_NAME, "form")
+            # Look for buyer type dropdown as indicator of active form
+            buyer_type = driver.find_elements(By.CLASS_NAME, "inputfield-Buyer_Type__c")
+            if buyer_type:
+                logger.info("✅ Form is available for submission")
+                return True, "available"
+        except:
+            pass
+        
+        logger.warning("❓ Unable to determine form availability")
+        return False, "unknown"
+        
+    except Exception as e:
+        logger.error(f"Error checking form availability: {e}")
+        return False, "error"
+
+
+def main(browser='firefox', max_retries=5, retry_delay=60):
+    """Main execution function with retry logic for form availability."""
     logger.info("Starting land form submission (Selenium method)...")
     logger.info(f"Using browser: {browser}")
+    logger.info(f"Max retries: {max_retries}, Retry delay: {retry_delay} seconds")
     
     # Validate config
     if not validate_config():
         logger.error("Configuration validation failed. Please fill in all required fields in config.py")
         sys.exit(1)
     
-    # Initialize WebDriver
-    driver = get_driver(browser)
-    if driver is None:
-        logger.error("Failed to initialize WebDriver")
-        sys.exit(1)
+    attempt = 0
+    while attempt < max_retries:
+        attempt += 1
+        logger.info(f"Attempt {attempt}/{max_retries}")
+        
+        # Initialize WebDriver
+        driver = get_driver(browser)
+        if driver is None:
+            logger.error("Failed to initialize WebDriver")
+            sys.exit(1)
+        
+        try:
+            # Navigate to form
+            logger.info(f"Navigating to: {config.URL}")
+            driver.get(config.URL)
+            
+            # Check form availability
+            is_available, status = check_form_availability(driver)
+            
+            if not is_available:
+                logger.info(f"Form not available (status: {status}). Closing browser...")
+                driver.quit()
+                
+                if attempt < max_retries:
+                    logger.info(f"Waiting {retry_delay} seconds before retry...")
+                    time.sleep(retry_delay)
+                    continue
+                else:
+                    logger.error(f"Form still not available after {max_retries} attempts")
+                    return False
+            
+            # Form is available, proceed with submission
+            logger.info("Form is available, proceeding with submission...")
+            
+            # Fill form
+            if not fill_form(driver):
+                logger.warning("Some form fields could not be filled")
+            
+            # Submit form
+            if not submit_form(driver):
+                logger.error("Form submission failed")
+                return False
+            
+            logger.info("✓ Form submission completed successfully!")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Unexpected error during attempt {attempt}: {e}")
+            driver.quit()
+            
+            if attempt < max_retries:
+                logger.info(f"Retrying in {retry_delay} seconds...")
+                time.sleep(retry_delay)
+                continue
+            else:
+                logger.error(f"Failed after {max_retries} attempts")
+                return False
+        
+        finally:
+            try:
+                driver.quit()
+                logger.info("WebDriver closed")
+            except:
+                pass
     
-    try:
-        # Navigate to form
-        logger.info(f"Navigating to: {config.URL}")
-        driver.get(config.URL)
-        
-        # Wait for page to load
-        time.sleep(2)
-        
-        # Fill form
-        if not fill_form(driver):
-            logger.warning("Some form fields could not be filled")
-        
-        # Submit form
-        if not submit_form(driver):
-            logger.error("Form submission failed")
-            return False
-        
-        logger.info("✓ Form submission completed!")
-        
-        # Keep browser open for verification (optional)
-        logger.info("Browser will stay open for 10 seconds for verification...")
-        time.sleep(10)
-        
-        return True
-        
-    except Exception as e:
-        logger.error(f"Unexpected error: {e}")
-        return False
-    finally:
-        driver.quit()
-        logger.info("WebDriver closed")
-
+    return False
 
 if __name__ == "__main__":
-    # Use 'chrome' or 'firefox'
     browser_choice = 'firefox'
-    success = main(browser_choice)
-    sys.exit(0 if success else 1)
+    max_retries = 10000
+    retry_delay = 0
+    
+    success = main(browser_choice, max_retries, retry_delay)
+    if success:
+        sys.exit(0)
+    else:
+        sys.exit(1)
