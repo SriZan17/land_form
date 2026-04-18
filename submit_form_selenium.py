@@ -90,37 +90,167 @@ def get_driver(browser='chrome'):
         return None
 
 
-def wait_for_element(driver, locator, timeout=10):
-    """Wait for element to be present and visible."""
+def wait_for_element(driver, locator, timeout=10, visible=True):
+    """Wait for element to be present and optionally visible."""
     try:
-        element = WebDriverWait(driver, timeout).until(
-            EC.presence_of_element_located(locator)
-        )
+        if visible:
+            element = WebDriverWait(driver, timeout).until(
+                EC.visibility_of_element_located(locator)
+            )
+        else:
+            element = WebDriverWait(driver, timeout).until(
+                EC.presence_of_element_located(locator)
+            )
         return element
     except Exception as e:
         logger.warning(f"Timeout waiting for element {locator}: {e}")
         return None
 
 
+def get_visible_texts(driver, locator):
+    """Return visible text values for matching elements."""
+    try:
+        elements = driver.find_elements(*locator)
+        return [el.text.strip() for el in elements if el.is_displayed() and el.text.strip()]
+    except Exception:
+        return []
+
+
+def scroll_to_element(driver, element):
+    """Scroll the browser viewport to the provided element."""
+    try:
+        driver.execute_script(
+            "arguments[0].scrollIntoView({block: 'center', inline: 'nearest'});",
+            element
+        )
+        time.sleep(0.5)
+    except Exception:
+        pass
+
+
+def dispatch_input_events(driver, element):
+    """Dispatch input and change events after changing a field value."""
+    try:
+        driver.execute_script(
+            "arguments[0].dispatchEvent(new Event('input', { bubbles: true }));"
+            "arguments[0].dispatchEvent(new Event('change', { bubbles: true }));",
+            element
+        )
+    except Exception:
+        pass
+
+
+def find_fallback_field(driver, selector, field_name, is_select=False):
+    """Attempt to find form controls using broader attribute matching."""
+    if isinstance(selector, tuple) and len(selector) == 2:
+        lookup_value = selector[1]
+    else:
+        lookup_value = field_name.replace(' ', '_')
+
+    name_term = lookup_value
+    if lookup_value.startswith('inputfield-') or lookup_value.startswith('row-'):
+        name_term = lookup_value.split('-', 1)[1]
+
+    candidates = []
+    selectors = [
+        f"[class*='{lookup_value}']",
+        f"[class*='{name_term}']",
+        f"[id*='{name_term}']",
+        f"[name*='{name_term}']",
+    ]
+
+    for css in selectors:
+        try:
+            candidates = driver.find_elements(By.CSS_SELECTOR, css)
+            if candidates:
+                for el in candidates:
+                    if el.is_displayed() or not is_select:
+                        return el
+        except Exception:
+            pass
+
+    if is_select:
+        try:
+            select_elements = driver.find_elements(By.XPATH,
+                f"//select[contains(@class, '{name_term}') or contains(@name, '{name_term}') or contains(@id, '{name_term}')]")
+            for el in select_elements:
+                if el.is_displayed():
+                    return el
+        except Exception:
+            pass
+
+    return None
+
+
 def fill_form_field(driver, selector, value, field_name, is_select=False):
-    """Fill a form field."""
+    """Fill a form field with robust selector handling."""
     try:
         logger.info(f"Filling field: {field_name}")
-        element = wait_for_element(driver, selector)
-        
+        element = wait_for_element(driver, selector, timeout=15, visible=False)
+
         if element is None:
-            logger.warning(f"Could not find element for {field_name}")
-            return False
-        
+            logger.warning(f"Element not found for {field_name} using selector {selector}")
+            element = find_fallback_field(driver, selector, field_name, is_select)
+            if element is None:
+                return False
+
+        scroll_to_element(driver, element)
+
         if is_select:
-            select = Select(element)
-            select.select_by_value(value)
-            logger.info(f"Selected option for {field_name}")
+            select = None
+            select_element = None
+            if element.tag_name.lower() == 'select':
+                select_element = element
+                select = Select(element)
+            else:
+                try:
+                    child_select = element.find_element(By.TAG_NAME, 'select')
+                    select_element = child_select
+                    select = Select(child_select)
+                except Exception:
+                    pass
+
+            if select is None:
+                logger.warning(f"Could not locate select element for {field_name}")
+                return False
+
+            try:
+                select.select_by_value(value)
+                logger.info(f"Selected option by value for {field_name}")
+            except Exception:
+                try:
+                    select.select_by_visible_text(value)
+                    logger.info(f"Selected option by visible text for {field_name}")
+                except Exception:
+                    logger.warning(f"Could not select option '{value}' for {field_name}")
+                    return False
+
+            if select_element is not None:
+                dispatch_input_events(driver, select_element)
         else:
-            element.clear()
-            element.send_keys(value)
+            input_target = element
+            if element.tag_name.lower() not in ('input', 'textarea'):
+                try:
+                    input_target = element.find_element(By.TAG_NAME, 'input')
+                except Exception:
+                    try:
+                        input_target = element.find_element(By.TAG_NAME, 'textarea')
+                    except Exception:
+                        pass
+
+            if input_target is None:
+                logger.warning(f"Could not locate text input for {field_name}")
+                return False
+
+            try:
+                input_target.clear()
+            except Exception:
+                pass
+
+            input_target.send_keys(value)
+            dispatch_input_events(driver, input_target)
             logger.info(f"Filled {field_name}")
-        
+
         return True
     except Exception as e:
         logger.error(f"Error filling {field_name}: {e}")
@@ -134,8 +264,9 @@ def submit_form(driver):
         
         # First, check and click the Terms and Conditions checkbox
         try:
-            checkbox = wait_for_element(driver, (By.CLASS_NAME, "inputfield-Terms_and_Conditions__c"), timeout=5)
+            checkbox = wait_for_element(driver, (By.XPATH, "//form//input[@type='checkbox']"), timeout=10)
             if checkbox and not checkbox.is_selected():
+                scroll_to_element(driver, checkbox)
                 checkbox.click()
                 logger.info("✓ Terms and Conditions checkbox clicked")
             elif checkbox and checkbox.is_selected():
@@ -210,38 +341,30 @@ def fill_form(driver):
     try:
         logger.info("Starting form population...")
         
-        # Wait for page to load
-        wait_for_element(driver, (By.TAG_NAME, "form"))
-        time.sleep(2)
-        
-        # Fill form fields - adjust selectors based on actual form structure
-        # Note: First Name and Last Name are prefilled by the server (personalized link)
-        # so we don't fill them here
         fields_to_fill = [
             (
-                (By.CLASS_NAME, "inputfield-Mobile_Phone__c"),
+                (By.XPATH, "//form//input[@type='text' and contains(@placeholder, '0410000000') or contains(@placeholder, 'phone') or contains(@placeholder, 'Phone') ]"),
                 config.PREFERRED_CONTACT_NUMBER,
                 "Phone Number",
                 False
             ),
             (
-                (By.CLASS_NAME, "inputfield-Buyer_Type__c"),
+                (By.XPATH, "(//form//select)[1]"),
                 config.BUYER_TYPE,
                 "Buyer Type",
-                True  # is_select
+                True
             ),
             (
-                (By.CLASS_NAME, "inputfield-X1st_Lot_Preference__c"),
+                (By.XPATH, "//form//input[@type='text' and contains(@placeholder, 'e.g. 725')]"),
                 config.FIRST_LOT_PREFERENCE,
                 "First Lot Preference",
                 False
             ),
         ]
         
-        # Add optional fields if provided
         if config.SECOND_LOT_PREFERENCE:
             fields_to_fill.append((
-                (By.CLASS_NAME, "inputfield-X2nd_Lot_Preference__c"),
+                (By.XPATH, "(//form//input[@type='text'])[5]"),
                 config.SECOND_LOT_PREFERENCE,
                 "Second Lot Preference",
                 False
@@ -249,22 +372,20 @@ def fill_form(driver):
         
         if config.THIRD_LOT_PREFERENCE:
             fields_to_fill.append((
-                (By.CLASS_NAME, "inputfield-X3rd_Lot_Preference__c"),
+                (By.XPATH, "(//form//input[@type='text'])[6]"),
                 config.THIRD_LOT_PREFERENCE,
                 "Third Lot Preference",
                 False
             ))
         
-        # Add contract condition if provided
         if config.CONTRACT_CONDITION:
             fields_to_fill.append((
-                (By.CLASS_NAME, "inputfield-dc__Multi_Picklist__c"),
+                (By.XPATH, "(//form//select)[2]"),
                 config.CONTRACT_CONDITION,
                 "Contract Condition",
                 True
             ))
         
-        # Fill each field
         successful_fills = 0
         for selector, value, field_name, is_select in fields_to_fill:
             if fill_form_field(driver, selector, value, field_name, is_select):
@@ -281,39 +402,39 @@ def fill_form(driver):
 def check_form_availability(driver):
     """Check if the form is currently available for submission."""
     try:
-        # Wait for page to load
+        # Wait for page to load and allow JS to render visible sections
         time.sleep(3)
-        
-        # Check for "Event Not Yet Accepting Registrations" message
-        try:
-            not_accepting = driver.find_elements(By.XPATH, "//h2[contains(text(), 'Event Not Yet Accepting Registrations')]")
-            if not_accepting:
-                logger.warning("❌ Form is not yet accepting registrations")
-                return False, "not_yet_open"
-        except:
-            pass
-        
-        # Check for "Registrations have now closed" message
-        try:
-            closed = driver.find_elements(By.XPATH, "//strong[contains(text(), 'Registrations have now closed')]")
-            if closed:
-                logger.warning("❌ Registrations have now closed")
-                return False, "closed"
-        except:
-            pass
-        
-        # Check if form elements are present
-        try:
-            form = driver.find_element(By.TAG_NAME, "form")
-            # Look for buyer type dropdown as indicator of active form
-            buyer_type = driver.find_elements(By.CLASS_NAME, "inputfield-Buyer_Type__c")
-            if buyer_type:
-                logger.info("✅ Form is available for submission")
-                return True, "available"
-        except:
-            pass
-        
-        logger.warning("❓ Unable to determine form availability")
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+        time.sleep(1)
+        driver.execute_script("window.scrollTo(0, 0);")
+        time.sleep(1)
+
+        visible_h2 = get_visible_texts(driver, (By.XPATH, "//h2"))
+        visible_strong = get_visible_texts(driver, (By.XPATH, "//strong"))
+        visible_status = " ".join(visible_h2 + visible_strong).lower()
+
+        if 'event not yet accepting registrations' in visible_status:
+            logger.warning("❌ Form is not yet accepting registrations")
+            return False, "not_yet_open"
+
+        if 'registrations have now closed' in visible_status:
+            logger.warning("❌ Registrations have now closed")
+            return False, "closed"
+
+        # Check if form elements are present and visible
+        form = wait_for_element(driver, (By.TAG_NAME, "form"), timeout=15, visible=False)
+        if form is None:
+            logger.warning("❓ Form element not found")
+            return False, "unknown"
+
+        scroll_to_element(driver, form)
+
+        visible_fields = [el for el in form.find_elements(By.XPATH, ".//input | .//select") if el.is_displayed()]
+        if visible_fields:
+            logger.info("✅ Form is available for submission")
+            return True, "available"
+
+        logger.warning("❓ Form is present but no visible form controls were found")
         return False, "unknown"
         
     except Exception as e:
@@ -338,7 +459,7 @@ def main(browser='firefox', max_retries=5, retry_delay=60):
         logger.info(f"Attempt {attempt}/{max_retries}")
         
         # Initialize WebDriver
-        driver = get_driver(browser)
+        driver = get_driver(browser) # Give the driver a moment to initialize
         if driver is None:
             logger.error("Failed to initialize WebDriver")
             sys.exit(1)
@@ -347,7 +468,6 @@ def main(browser='firefox', max_retries=5, retry_delay=60):
             # Navigate to form
             logger.info(f"Navigating to: {config.URL}")
             driver.get(config.URL)
-            
             # Check form availability
             is_available, status = check_form_availability(driver)
             
